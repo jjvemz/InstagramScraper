@@ -1,0 +1,197 @@
+================================================================================
+REPORTE DIAGNÓSTICO COMPLETO - INSTAGRAM COMMENT SCRAPER
+================================================================================
+Fecha: 28-10-2025
+URL de prueba: https://www.instagram.com/reel/DQVNHKXEaWs/
+Comentarios según Instagram: 171
+Comentarios obtenidos: 89
+Comentarios faltantes: 82 (48% missing)
+
+================================================================================
+1. PROBLEMA IDENTIFICADO
+================================================================================
+
+El scraper solo obtiene 89 de 171 comentarios, faltando 82 comentarios (48%).
+
+PRUEBAS REALIZADAS:
+-------------------
+✓ Test 1 - Default (sin parámetro amount): 20 comentarios
+✓ Test 2 - amount=171: 89 comentarios
+✓ Test 3 - amount=500: 89 comentarios
+✓ Test 4 - Diferentes valores de amount: Máximo siempre 89
+
+ANÁLISIS DE ESTRUCTURA:
+-----------------------
+- Top-level comments: 89
+- 2nd level replies (respuestas): 0
+- child_comment_count total: 0
+- Ningún comentario tiene respuestas anidadas
+
+================================================================================
+2. CAUSAS POSIBLES
+================================================================================
+
+CAUSA #1: Limitación de la librería instagrapi
+------------------------------------------------
+La librería instagrapi puede tener un límite interno de ~90 comentarios por
+request. Esto es común en wrappers de APIs no oficiales.
+
+CAUSA #2: Limitación de Instagram API privada
+----------------------------------------------
+Instagram puede estar limitando cuántos comentarios se devuelven en una sola
+solicitud o serie de solicitudes, especialmente para cuentas nuevas o con
+poca actividad.
+
+CAUSA #3: Comentarios ocultos/filtrados
+----------------------------------------
+Instagram filtra comentarios que considera spam, ofensivos, o de cuentas
+bloqueadas. Estos NO se devuelven via API pero SÍ cuentan en el total.
+
+CAUSA #4: Rate limiting / Anti-bot
+-----------------------------------
+Instagram puede estar detectando el scraping y limitando los resultados
+intencionalmente.
+
+CAUSA #5: Paginación incompleta
+--------------------------------
+El método media_comments() de instagrapi puede no estar paginando
+correctamente o puede estar parando antes de obtener todos los comentarios.
+
+================================================================================
+3. INVESTIGACIÓN ADICIONAL REQUERIDA
+================================================================================
+
+Para determinar la causa exacta, se necesita:
+
+[ ] Probar paginación manual usando private_request directamente
+    - Requiere renovar sesión de Instagram (expiró durante pruebas)
+
+[ ] Revisar el código fuente de instagrapi.media_comments()
+    - Ver si hay límites hardcoded
+
+[ ] Probar con diferentes posts
+    - Verificar si el límite de 89 es consistente
+
+[ ] Probar con una cuenta de Instagram diferente
+    - Ver si el límite depende de la cuenta
+
+[ ] Usar Instagram Web Scraping (Scrapfly) con JavaScript rendering
+    - Alternativa para comparar resultados
+
+================================================================================
+4. SOLUCIONES PROPUESTAS
+================================================================================
+
+SOLUCIÓN A: Paginación Manual Mejorada
+---------------------------------------
+Implementar paginación manual usando private_request() de instagrapi:
+
+```python
+def fetch_all_comments_manual(cl, media_pk):
+    all_comments = []
+    max_id = None
+
+    while True:
+        params = {'can_support_threading': 'true'}
+        if max_id:
+            params['max_id'] = max_id
+
+        result = cl.private_request(f'media/{media_pk}/comments/', params=params)
+        comments = result.get('comments', [])
+
+        if not comments:
+            break
+
+        all_comments.extend(comments)
+
+        if not result.get('has_more_comments') or not result.get('next_max_id'):
+            break
+
+        max_id = result.get('next_max_id')
+        time.sleep(2)  # Delay para evitar rate limiting
+
+    return all_comments
+```
+
+ESTADO: Requiere renovar sesión de Instagram para probar
+
+SOLUCIÓN B: Usar Instaloader (librería alternativa)
+----------------------------------------------------
+Instaloader es otra librería de Python para Instagram que puede tener mejor
+soporte para comentarios:
+
+```python
+from instaloader import Instaloader, Post
+
+L = Instaloader()
+L.login(username, password)
+
+post = Post.from_shortcode(L.context, shortcode)
+comments = [comment for comment in post.get_comments()]
+```
+
+ESTADO: No probado aún
+
+SOLUCIÓN C: Combinar múltiples métodos
+---------------------------------------
+1. Usar instagrapi para obtener hasta 89 comentarios
+2. Usar Scrapfly con JavaScript para scrapear el resto desde la web
+3. Deduplicar y combinar resultados
+
+ESTADO: Complejo, última opción
+
+SOLUCIÓN D: Aceptar el límite actual
+-------------------------------------
+Si las pruebas confirman que es una limitación de Instagram para todas las
+cuentas/métodos, entonces 89 comentarios puede ser el máximo obtenible
+sin violar los términos de servicio de Instagram.
+
+================================================================================
+5. PRÓXIMOS PASOS
+================================================================================
+
+PASO 1: Renovar sesión de Instagram
+------------------------------------
+Ejecutar nuevamente el scraper con credenciales para crear una sesión fresca.
+
+PASO 2: Probar paginación manual
+---------------------------------
+Ejecutar test_pagination.py con sesión válida para ver si obtiene más de 89.
+
+PASO 3: Si paginación manual funciona
+--------------------------------------
+- Implementar en scraper principal
+- Actualizar código en src/scraper_instagram.py
+
+PASO 4: Si paginación manual NO funciona
+-----------------------------------------
+- Probar con Instaloader como alternativa
+- O aceptar el límite de 89 comentarios
+
+PASO 5: Documentar limitación
+------------------------------
+- Informar al usuario sobre el límite
+- Agregar mensaje claro en el scraper
+
+================================================================================
+6. RECOMENDACIÓN INMEDIATA
+================================================================================
+
+Para continuar con las pruebas, necesito que ejecutes nuevamente el scraper
+principal para renovar la sesión de Instagram:
+
+```bash
+cd src
+python scraper_instagram.py
+```
+
+Luego podremos ejecutar test_pagination.py para ver si la paginación manual
+mejora los resultados.
+
+Si la paginación manual NO mejora los resultados, entonces el límite de 89
+comentarios es una restricción de Instagram que no podemos evitar sin violar
+sus términos de servicio.
+
+================================================================================
+FIN DEL REPORTE
+================================================================================
