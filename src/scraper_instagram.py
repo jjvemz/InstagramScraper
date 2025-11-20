@@ -79,10 +79,9 @@ def normalize_lists(obj, list_fields):
             # If value is None and the key is expected to be a list, replace it.
             if v is None and k in list_fields:
                 obj[k] = []
-            else:
-                # Recurse into nested dicts/lists
-                if isinstance(v, (dict, list)):
-                    normalize_lists(v, list_fields)
+            # Always recurse into nested dicts/lists to normalize deeply nested structures
+            if isinstance(obj[k], (dict, list)):
+                normalize_lists(obj[k], list_fields)
     elif isinstance(obj, list):
         for item in obj:
             if isinstance(item, (dict, list)):
