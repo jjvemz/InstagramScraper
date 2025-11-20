@@ -11,6 +11,7 @@ from scrapfly import ScrapflyClient, ScrapeConfig
 # Try to import instagrapi
 try:
     from instagrapi import Client as InstagrapiClient
+    from instagrapi.extractors import extract_media_v1
     INSTAGRAPI_AVAILABLE = True
 except ImportError:
     INSTAGRAPI_AVAILABLE = False
@@ -52,6 +53,251 @@ def extract_media_data_from_html(html):
 
     return None
 
+# Constant: fields that must be lists (used by normalize_lists fallback)
+LIST_FIELDS_THAT_MUST_BE_LISTS = {
+    "audio_filter_infos",
+    "additional_audio_assets",
+    "candidates",
+    "in",
+    "video_versions",
+    "carousel_media",
+    "clips_items",
+    "usertags",
+    "sponsor_tags",
+    "clips_attribution_info",
+}
+
+def normalize_lists(obj, list_fields):
+    """
+    Recursively walk a dict/list structure and replace None -> [] only when the
+    current dict key is present in list_fields.
+
+    This mutates the passed object in-place and returns it for convenience.
+    """
+    if isinstance(obj, dict):
+        for k, v in list(obj.items()):
+            # If value is None and the key is expected to be a list, replace it.
+            if v is None and k in list_fields:
+                obj[k] = []
+            else:
+                # Recurse into nested dicts/lists
+                if isinstance(v, (dict, list)):
+                    normalize_lists(v, list_fields)
+    elif isinstance(obj, list):
+        for item in obj:
+            if isinstance(item, (dict, list)):
+                normalize_lists(item, list_fields)
+    return obj
+
+def safe_media_info(cl, media_pk, username=None, password=None):
+    """
+    Robust media_info wrapper with better error handling:
+    - Try cl.media_info_v1() directly first
+    - On Pydantic error, fetch raw data, normalize, then extract
+    - On 401, attempt re-login and retry
+    """
+    # Strategy 1: Try the standard V1 API call
+    try:
+        return cl.media_info_v1(media_pk)
+    except Exception as v1_err:
+        print(f"⚠️  V1 API failed: {str(v1_err)[:100]}")
+        
+        # Strategy 2: Fetch raw data, normalize it, then extract
+        try:
+            # Get the raw media data from Instagram's private API
+            media_id = str(media_pk)
+            result = cl.private_request(f"media/{media_id}/info/")
+            
+            if not result or "items" not in result or not result["items"]:
+                raise ValueError("No media data in API response")
+            
+            raw_media = result["items"][0]
+            
+            # Normalize all list fields to prevent Pydantic validation errors
+            normalize_lists(raw_media, LIST_FIELDS_THAT_MUST_BE_LISTS)
+            
+            # Extract using the public extractor function
+            return extract_media_v1(raw_media)
+            
+        except Exception as normalize_err:
+            print(f"⚠️  Normalized extraction failed: {str(normalize_err)[:100]}")
+            
+            # Strategy 3: Check if it's a 401 and try re-login
+            status_code = getattr(getattr(normalize_err, "response", None), "status_code", None)
+            
+            if status_code == 401:
+                uname = username or os.getenv("INSTAGRAM_USERNAME")
+                pwd = password or os.getenv("INSTAGRAM_PASSWORD")
+                
+                if uname and pwd:
+                    try:
+                        print("🔄 Attempting re-login...")
+                        cl.login(uname, pwd)
+                        
+                        # Retry after login
+                        result = cl.private_request(f"media/{media_pk}/info/")
+                        if result and "items" in result and result["items"]:
+                            raw_media = result["items"][0]
+                            normalize_lists(raw_media, LIST_FIELDS_THAT_MUST_BE_LISTS)
+                            return extract_media_v1(raw_media)
+                        
+                    except Exception as login_err:
+                        print(f"❌ Re-login attempt failed: {login_err}")
+            
+            # If all strategies fail, raise a comprehensive error
+            raise RuntimeError(
+                f"All media_info strategies failed.\n"
+                f"V1 error: {str(v1_err)[:200]}\n"
+                f"Normalize error: {str(normalize_err)[:200]}"
+            ) from normalize_err
+
+
+def patch_client_media_info(cl, username=None, password=None):
+    """
+    Patch the client's media_info_v1 method to use our safe version
+    This prevents Pydantic validation errors throughout the entire client
+    """
+    # Store the original method in a place where safe_media_info can access it
+    if not hasattr(cl, '_original_media_info_v1'):
+        cl._original_media_info_v1 = cl.media_info_v1
+    
+    def patched_media_info_v1(media_pk):
+        """Wrapper that uses safe_media_info with the original method"""
+        try:
+            return safe_media_info_patched(cl, media_pk, username, password)
+        except Exception as e:
+            # If our safe version fails, try the original as last resort
+            print(f"⚠️  Patched version failed, trying original: {str(e)[:100]}")
+            return cl._original_media_info_v1(media_pk)
+    
+    # Replace the method
+    cl.media_info_v1 = patched_media_info_v1
+    return cl
+
+
+def safe_media_info_patched(cl, media_pk, username=None, password=None):
+    """
+    Version of safe_media_info that uses the original (unpached) method
+    to avoid infinite recursion
+    """
+    # Use the original method if available, otherwise fall back to current
+    original_method = getattr(cl, '_original_media_info_v1', cl.media_info_v1)
+    
+    # Strategy 1: Try the original V1 API call
+    try:
+        return original_method(media_pk)
+    except Exception as v1_err:
+        error_str = str(v1_err)
+        print(f"⚠️  V1 API failed: {error_str[:100]}")
+        
+        # Check if it's a login error - handle it immediately
+        if 'login_required' in error_str.lower() or 'loginrequired' in str(type(v1_err)).lower():
+            print("🔄 Login required error detected - attempting re-login...")
+            uname = username or os.getenv("INSTAGRAM_USERNAME")
+            pwd = password or os.getenv("INSTAGRAM_PASSWORD")
+            
+            if uname and pwd:
+                try:
+                    import time
+                    time.sleep(1)  # Small delay before re-login
+                    cl.login(uname, pwd)
+                    print("✅ Re-login successful, retrying request...")
+                    
+                    # Save the new session
+                    try:
+                        cl.dump_settings('instagram_session.json')
+                    except:
+                        pass
+                    
+                    # Retry with fresh session
+                    return original_method(media_pk)
+                    
+                except Exception as login_err:
+                    print(f"❌ Re-login failed: {str(login_err)[:100]}")
+        
+        # Strategy 2: Fetch raw data, normalize it, then extract
+        try:
+            # Get the raw media data from Instagram's private API
+            media_id = str(media_pk)
+            result = cl.private_request(f"media/{media_id}/info/")
+            
+            if not result or "items" not in result or not result["items"]:
+                raise ValueError("No media data in API response")
+            
+            raw_media = result["items"][0]
+            
+            # Normalize all list fields to prevent Pydantic validation errors
+            normalize_lists(raw_media, LIST_FIELDS_THAT_MUST_BE_LISTS)
+            
+            # Extract using the public extractor function
+            return extract_media_v1(raw_media)
+            
+        except Exception as normalize_err:
+            error_str2 = str(normalize_err)
+            print(f"⚠️  Normalized extraction failed: {error_str2[:100]}")
+            
+            # Check for login error again in normalized extraction
+            if 'login_required' in error_str2.lower() or 'loginrequired' in str(type(normalize_err)).lower():
+                print("🔄 Login required in normalized extraction - re-login attempt...")
+                uname = username or os.getenv("INSTAGRAM_USERNAME")
+                pwd = password or os.getenv("INSTAGRAM_PASSWORD")
+                
+                if uname and pwd:
+                    try:
+                        import time
+                        time.sleep(1)
+                        cl.login(uname, pwd)
+                        print("✅ Re-login successful after normalization failure")
+                        
+                        # Save the new session
+                        try:
+                            cl.dump_settings('instagram_session.json')
+                        except:
+                            pass
+                        
+                        # Final retry after re-login
+                        result = cl.private_request(f"media/{media_pk}/info/")
+                        if result and "items" in result and result["items"]:
+                            raw_media = result["items"][0]
+                            normalize_lists(raw_media, LIST_FIELDS_THAT_MUST_BE_LISTS)
+                            return extract_media_v1(raw_media)
+                        
+                    except Exception as final_login_err:
+                        print(f"❌ Final re-login failed: {str(final_login_err)[:100]}")
+            
+            # Strategy 3: Check if it's a 401/403 and try re-login (legacy handler)
+            status_code = getattr(getattr(normalize_err, "response", None), "status_code", None)
+            
+            if status_code in [401, 403]:
+                uname = username or os.getenv("INSTAGRAM_USERNAME")
+                pwd = password or os.getenv("INSTAGRAM_PASSWORD")
+                
+                if uname and pwd:
+                    try:
+                        print("🔄 HTTP 401/403 detected - attempting re-login...")
+                        import time
+                        time.sleep(1)
+                        cl.login(uname, pwd)
+                        
+                        # Retry after login
+                        result = cl.private_request(f"media/{media_pk}/info/")
+                        if result and "items" in result and result["items"]:
+                            raw_media = result["items"][0]
+                            normalize_lists(raw_media, LIST_FIELDS_THAT_MUST_BE_LISTS)
+                            return extract_media_v1(raw_media)
+                        
+                    except Exception as login_err:
+                        print(f"❌ Re-login attempt failed: {login_err}")
+            
+            # If all strategies fail, raise a comprehensive error
+            raise RuntimeError(
+                f"All media_info strategies failed.\n"
+                f"V1 error: {str(v1_err)[:200]}\n"
+                f"Normalize error: {str(normalize_err)[:200]}\n"
+                f"Hint: Try deleting 'instagram_session.json' and running again with fresh credentials."
+            ) from normalize_err
+
+
 def scrape_with_instagrapi(url, username=None, password=None):
     """
     Scrape Instagram using instagrapi (requires login)
@@ -75,43 +321,78 @@ def scrape_with_instagrapi(url, username=None, password=None):
     cl = InstagrapiClient()
     cl.delay_range = [1, 3]
 
-    # Try to login
+    # Login logic with session validation
     session_file = 'instagram_session.json'
     logged_in = False
+
+    if not username or not password:
+        print("❌ Error: Username and password required")
+        return None
 
     # Try saved session first
     if os.path.exists(session_file):
         try:
+            print("🔄 Loading saved session...")
             cl.load_settings(session_file)
-            if username and password:
-                cl.login(username, password)
+            
+            # Validate session by making a simple request
+            try:
+                cl.get_timeline_feed()  # Simple test request
                 logged_in = True
-        except:
-            pass
+                print("✅ Saved session is valid")
+            except Exception as validation_err:
+                print(f"⚠️  Saved session expired or invalid: {str(validation_err)[:50]}")
+                # Session invalid, delete it and force fresh login
+                if os.path.exists(session_file):
+                    os.remove(session_file)
+                    print("🗑️  Deleted invalid session file")
+        except Exception as e:
+            print(f"⚠️  Could not load session: {str(e)[:50]}")
+            if os.path.exists(session_file):
+                os.remove(session_file)
 
-    # If not logged in, try with credentials
-    if not logged_in and username and password:
+    # If not logged in with session, do fresh login
+    if not logged_in:
         try:
+            print("🔐 Performing fresh login...")
             cl.login(username, password)
             cl.dump_settings(session_file)
             logged_in = True
+            print("✅ Fresh login successful!")
         except Exception as e:
-            print(f"Login failed: {e}")
-            return None
+            print(f"❌ Login failed: {e}")
+            # Try one more time after small delay
+            import time
+            time.sleep(2)
+            try:
+                print("🔄 Retrying login...")
+                cl.login(username, password)
+                cl.dump_settings(session_file)
+                logged_in = True
+                print("✅ Login successful on retry!")
+            except Exception as e2:
+                print(f"❌ Login failed again: {e2}")
+                return None
 
     if not logged_in:
-        print("Error: Login required to fetch comments")
+        print("❌ Error: Could not establish valid session")
         return None
+
+    # CRITICAL: Patch the client to use our safe media_info everywhere
+    cl = patch_client_media_info(cl, username, password)
+    print("🔧 Client patched with safe media_info")
 
     try:
         # Get media info
         media_pk = cl.media_pk_from_code(shortcode)
-        media_info = cl.media_info(media_pk)
+        print(f"📌 Media PK: {media_pk}")
+        
+        media_info = safe_media_info_patched(cl, media_pk, username, password)
 
-        print(f"Post has {media_info.comment_count} comments (according to platform)")
+        print(f"📊 Post has {media_info.comment_count} comments (according to platform)")
 
         # Fetch ALL comments with pagination
-        print("Fetching all comments...")
+        print("💬 Fetching all comments...")
         total_to_fetch = media_info.comment_count
 
         # media_comments has an 'amount' parameter to specify how many to fetch
@@ -125,23 +406,17 @@ def scrape_with_instagrapi(url, username=None, password=None):
         for i, comment_obj in enumerate(all_comments, 1):
             # Safely get attributes that may not exist
             is_reply = bool(getattr(comment_obj, 'parent_comment_id', None) or getattr(comment_obj, 'replied_to_comment_id', None))
-            child_count = getattr(comment_obj, 'child_comment_count', 0) or 0
-
-            comment = {
-                'Comment Number (ID)': i,
-                'Nickname': comment_obj.user.username,
+            
+            comment_dict = {
+                'Comment Number': i,
                 'User @': f'@{comment_obj.user.username}',
                 'User URL': f'https://instagram.com/{comment_obj.user.username}',
-                'Comment Text': comment_obj.text,
-                'Time': comment_obj.created_at_utc.strftime('%Y-%m-%d %H:%M:%S') if comment_obj.created_at_utc else '',
-                'Likes': comment_obj.like_count or 0,
-                'Profile Picture URL': str(comment_obj.user.profile_pic_url) if comment_obj.user.profile_pic_url else '',
-                'Followers': 0,
-                'Is 2nd Level Comment': is_reply,
-                'User Replied To': '',
-                'Number of Replies': child_count
+                'Comment': comment_obj.text,
+                'Comment Likes': comment_obj.like_count,
+                'Comment Time': comment_obj.created_at_utc.strftime('%Y-%m-%d %H:%M:%S') if comment_obj.created_at_utc else '',
+                'Is 2nd Level Comment': is_reply
             }
-            comments.append(comment)
+            comments.append(comment_dict)
 
         # Prepare metadata
         user = media_info.user
@@ -169,7 +444,7 @@ def scrape_with_instagrapi(url, username=None, password=None):
         return metadata, comments
 
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"❌ Error: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -274,7 +549,7 @@ def scrape_instagram_video(url, instagram_username=None, instagram_password=None
 
 def main():
     print("="*70)
-    print("INSTAGRAM COMMENT SCRAPER v2.0")
+    print("INSTAGRAM COMMENT SCRAPER v2.1 (FIXED)")
     print("="*70)
 
     # Important limitation warning
