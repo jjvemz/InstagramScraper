@@ -1,8 +1,21 @@
 import os
+import re
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 
 def export_to_excel(metadata, comments, platform, filename):
+    """
+    Exportar datos scrapeados a archivo Excel (.xlsx)
+    
+    Args:
+        metadata: Dict con metadatos del post
+        comments: Lista de dicts con comentarios
+        platform: Nombre de la plataforma (instagram, tiktok, etc)
+        filename: Nombre base del archivo (sin extension)
+    
+    Returns:
+        str: Ruta completa del archivo guardado
+    """
     os.makedirs(f"scrape/{platform}", exist_ok=True)
     filepath = os.path.join(f"scrape/{platform}", filename + ".xlsx")
 
@@ -21,7 +34,7 @@ def export_to_excel(metadata, comments, platform, filename):
     for col, header in enumerate(metadata_headers, 1):
         ws.cell(row=2, column=col, value=metadata.get(header, ""))
 
-    # Dejar columnas 15 y 16 vacías
+    # Dejar columnas 15 y 16 vacias
     start_col = 17
 
     # Headers de comentarios
@@ -38,6 +51,20 @@ def export_to_excel(metadata, comments, platform, filename):
             for col, header in enumerate(comment_headers, start_col):
                 ws.cell(row=row_idx, column=col, value=comment.get(header, ""))
 
-    wb.save(filepath)
-    print(f"[OK] XLSX exportado: {filepath}")
-    return filepath
+    # Guardar con manejo de errores
+    try:
+        wb.save(filepath)
+        print(f"[OK] XLSX exportado: {filepath}")
+        return filepath
+    except Exception as e:
+        print(f"Error al guardar Excel: {e}")
+        # Intentar con nombre de archivo seguro (sin caracteres especiales)
+        safe_filename = re.sub(r'[^\w\-_\. ]', '_', filename)
+        safe_filepath = os.path.join(f"scrape/{platform}", safe_filename + ".xlsx")
+        try:
+            wb.save(safe_filepath)
+            print(f"[OK] XLSX exportado con nombre seguro: {safe_filepath}")
+            return safe_filepath
+        except Exception as e2:
+            print(f"Error critico al guardar Excel: {e2}")
+            raise

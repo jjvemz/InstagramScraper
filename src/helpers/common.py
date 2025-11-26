@@ -12,9 +12,8 @@ load_dotenv()
 SCRAPFLY_KEY = os.getenv('SCRAPFLY_API_KEY')
 
 if not SCRAPFLY_KEY:
-    print("⚠️ ERROR: No se encontró SCRAPFLY_API_KEY en el archivo .env")
-    print("Por favor configura tu clave API en el archivo .env")
-    sys.exit(1)
+    SCRAPFLY_KEY = None  # Permitir None para Instagram con instagrapi
+    print("⚠️ WARNING: No SCRAPFLY_API_KEY found (OK if using Instagram with credentials)")
 
 def validate_links(links, platform):
     if len(links) > 10:

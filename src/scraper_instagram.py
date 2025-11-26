@@ -8,6 +8,16 @@ from helpers.export_csv import export_to_csv
 from helpers.common import validate_links, format_date_for_filename, SCRAPFLY_KEY
 from scrapfly import ScrapflyClient, ScrapeConfig
 
+sys.path = list(dict.fromkeys(sys.path))
+
+def clean_url(url):
+    """Limpiar y validar URL"""
+    url = str(url).strip()
+    # Verificar caracteres inválidos
+    if '\\' in url or url.count('http') > 1:
+        raise ValueError(f"URL invalida detectada: {url[:100]}")
+    return url
+
 # Try to import instagrapi
 try:
     from instagrapi import Client as InstagrapiClient
@@ -15,10 +25,10 @@ try:
     INSTAGRAPI_AVAILABLE = True
 except ImportError:
     INSTAGRAPI_AVAILABLE = False
-    print("⚠️  Warning: instagrapi not installed. Install it with: pip install instagrapi")
+    print("Warning: instagrapi not installed. Install it with: pip install instagrapi")
     print("   Without it, you'll need Instagram credentials to scrape ALL comments.")
 
-client = ScrapflyClient(key=SCRAPFLY_KEY)
+client = ScrapflyClient(key=SCRAPFLY_KEY) if SCRAPFLY_KEY else None
 
 def find_in_dict(obj, target_key):
     """Recursively search for a key in nested dict/list structure"""
@@ -99,7 +109,7 @@ def safe_media_info(cl, media_pk, username=None, password=None):
     try:
         return cl.media_info_v1(media_pk)
     except Exception as v1_err:
-        print(f"⚠️  V1 API failed: {str(v1_err)[:100]}")
+        print(f"V1 API failed: {str(v1_err)[:100]}")
         
         # Strategy 2: Fetch raw data, normalize it, then extract
         try:
@@ -119,7 +129,7 @@ def safe_media_info(cl, media_pk, username=None, password=None):
             return extract_media_v1(raw_media)
             
         except Exception as normalize_err:
-            print(f"⚠️  Normalized extraction failed: {str(normalize_err)[:100]}")
+            print(f"Normalized extraction failed: {str(normalize_err)[:100]}")
             
             # Strategy 3: Check if it's a 401 and try re-login
             status_code = getattr(getattr(normalize_err, "response", None), "status_code", None)
@@ -130,7 +140,7 @@ def safe_media_info(cl, media_pk, username=None, password=None):
                 
                 if uname and pwd:
                     try:
-                        print("🔄 Attempting re-login...")
+                        print("Attempting re-login...")
                         cl.login(uname, pwd)
                         
                         # Retry after login
@@ -141,7 +151,7 @@ def safe_media_info(cl, media_pk, username=None, password=None):
                             return extract_media_v1(raw_media)
                         
                     except Exception as login_err:
-                        print(f"❌ Re-login attempt failed: {login_err}")
+                        print(f"Re-login attempt failed: {login_err}")
             
             # If all strategies fail, raise a comprehensive error
             raise RuntimeError(
@@ -166,7 +176,7 @@ def patch_client_media_info(cl, username=None, password=None):
             return safe_media_info_patched(cl, media_pk, username, password)
         except Exception as e:
             # If our safe version fails, try the original as last resort
-            print(f"⚠️  Patched version failed, trying original: {str(e)[:100]}")
+            print(f"Patched version failed, trying original: {str(e)[:100]}")
             return cl._original_media_info_v1(media_pk)
     
     # Replace the method
@@ -187,11 +197,11 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
         return original_method(media_pk)
     except Exception as v1_err:
         error_str = str(v1_err)
-        print(f"⚠️  V1 API failed: {error_str[:100]}")
+        print(f"V1 API failed: {error_str[:100]}")
         
         # Check if it's a login error - handle it immediately
         if 'login_required' in error_str.lower() or 'loginrequired' in str(type(v1_err)).lower():
-            print("🔄 Login required error detected - attempting re-login...")
+            print("Login required error detected - attempting re-login...")
             uname = username or os.getenv("INSTAGRAM_USERNAME")
             pwd = password or os.getenv("INSTAGRAM_PASSWORD")
             
@@ -200,7 +210,7 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
                     import time
                     time.sleep(1)  # Small delay before re-login
                     cl.login(uname, pwd)
-                    print("✅ Re-login successful, retrying request...")
+                    print("Re-login successful, retrying request...")
                     
                     # Save the new session
                     try:
@@ -212,7 +222,7 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
                     return original_method(media_pk)
                     
                 except Exception as login_err:
-                    print(f"❌ Re-login failed: {str(login_err)[:100]}")
+                    print(f"Re-login failed: {str(login_err)[:100]}")
         
         # Strategy 2: Fetch raw data, normalize it, then extract
         try:
@@ -233,11 +243,11 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
             
         except Exception as normalize_err:
             error_str2 = str(normalize_err)
-            print(f"⚠️  Normalized extraction failed: {error_str2[:100]}")
+            print(f"Normalized extraction failed: {error_str2[:100]}")
             
             # Check for login error again in normalized extraction
             if 'login_required' in error_str2.lower() or 'loginrequired' in str(type(normalize_err)).lower():
-                print("🔄 Login required in normalized extraction - re-login attempt...")
+                print("Login required in normalized extraction - re-login attempt...")
                 uname = username or os.getenv("INSTAGRAM_USERNAME")
                 pwd = password or os.getenv("INSTAGRAM_PASSWORD")
                 
@@ -246,7 +256,7 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
                         import time
                         time.sleep(1)
                         cl.login(uname, pwd)
-                        print("✅ Re-login successful after normalization failure")
+                        print("Re-login successful after normalization failure")
                         
                         # Save the new session
                         try:
@@ -262,7 +272,7 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
                             return extract_media_v1(raw_media)
                         
                     except Exception as final_login_err:
-                        print(f"❌ Final re-login failed: {str(final_login_err)[:100]}")
+                        print(f"Final re-login failed: {str(final_login_err)[:100]}")
             
             # Strategy 3: Check if it's a 401/403 and try re-login (legacy handler)
             status_code = getattr(getattr(normalize_err, "response", None), "status_code", None)
@@ -273,7 +283,7 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
                 
                 if uname and pwd:
                     try:
-                        print("🔄 HTTP 401/403 detected - attempting re-login...")
+                        print("HTTP 401/403 detected - attempting re-login...")
                         import time
                         time.sleep(1)
                         cl.login(uname, pwd)
@@ -286,7 +296,7 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
                             return extract_media_v1(raw_media)
                         
                     except Exception as login_err:
-                        print(f"❌ Re-login attempt failed: {login_err}")
+                        print(f"Re-login attempt failed: {login_err}")
             
             # If all strategies fail, raise a comprehensive error
             raise RuntimeError(
@@ -303,18 +313,28 @@ def scrape_with_instagrapi(url, username=None, password=None):
     This method gets ALL comments reliably
     """
     if not INSTAGRAPI_AVAILABLE:
-        print("❌ Error: instagrapi not installed")
+        print("Error: instagrapi not installed")
+        return None
+
+    # Limpiar y validar URL
+    try:
+        url = clean_url(url)
+    except ValueError as e:
+        print(f"ERROR: {e}")
         return None
 
     print(f"\nScraping with instagrapi (authenticated method)...")
+    print(f"URL: {url}")
 
-    # Extract shortcode
-    shortcode_match = re.search(r'/(p|reel)/([A-Za-z0-9_-]+)', url)
+    # Extract shortcode - INCLUYE /reels/ con 's'
+    shortcode_match = re.search(r'/(p|reel|reels)/([A-Za-z0-9_-]+)', url)
     if not shortcode_match:
-        print("Error: Invalid URL")
+        print(f"Error: Could not extract shortcode from URL")
+        print(f"   Valid formats: /p/CODE or /reel/CODE or /reels/CODE")
         return None
 
     shortcode = shortcode_match.group(2)
+    print(f"Shortcode: {shortcode}")
 
     # Initialize client
     cl = InstagrapiClient()
@@ -325,80 +345,80 @@ def scrape_with_instagrapi(url, username=None, password=None):
     logged_in = False
 
     if not username or not password:
-        print("❌ Error: Username and password required")
+        print("Error: Username and password required")
         return None
 
     # Try saved session first
     if os.path.exists(session_file):
         try:
-            print("🔄 Loading saved session...")
+            print("Loading saved session...")
             cl.load_settings(session_file)
             
             # Validate session by making a simple request
             try:
                 cl.get_timeline_feed()  # Simple test request
                 logged_in = True
-                print("✅ Saved session is valid")
+                print("Saved session is valid")
             except Exception as validation_err:
-                print(f"⚠️  Saved session expired or invalid: {str(validation_err)[:50]}")
+                print(f"Saved session expired or invalid: {str(validation_err)[:50]}")
                 # Session invalid, delete it and force fresh login
                 if os.path.exists(session_file):
                     os.remove(session_file)
-                    print("🗑️  Deleted invalid session file")
+                    print("Deleted invalid session file")
         except Exception as e:
-            print(f"⚠️  Could not load session: {str(e)[:50]}")
+            print(f"Could not load session: {str(e)[:50]}")
             if os.path.exists(session_file):
                 os.remove(session_file)
 
     # If not logged in with session, do fresh login
     if not logged_in:
         try:
-            print("🔐 Performing fresh login...")
+            print("Performing fresh login...")
             cl.login(username, password)
             cl.dump_settings(session_file)
             logged_in = True
-            print("✅ Fresh login successful!")
+            print("Fresh login successful!")
         except Exception as e:
-            print(f"❌ Login failed: {e}")
+            print(f"Login failed: {e}")
             # Try one more time after small delay
             import time
             time.sleep(2)
             try:
-                print("🔄 Retrying login...")
+                print("Retrying login...")
                 cl.login(username, password)
                 cl.dump_settings(session_file)
                 logged_in = True
-                print("✅ Login successful on retry!")
+                print("Login successful on retry!")
             except Exception as e2:
-                print(f"❌ Login failed again: {e2}")
+                print(f"Login failed again: {e2}")
                 return None
 
     if not logged_in:
-        print("❌ Error: Could not establish valid session")
+        print("Error: Could not establish valid session")
         return None
 
     # CRITICAL: Patch the client to use our safe media_info everywhere
     cl = patch_client_media_info(cl, username, password)
-    print("🔧 Client patched with safe media_info")
+    print("Client patched with safe media_info")
 
     try:
         # Get media info
         media_pk = cl.media_pk_from_code(shortcode)
-        print(f"📌 Media PK: {media_pk}")
+        print(f"Media PK: {media_pk}")
         
         media_info = safe_media_info_patched(cl, media_pk, username, password)
 
-        print(f"📊 Post has {media_info.comment_count} comments (according to platform)")
+        print(f"Post has {media_info.comment_count} comments (according to platform)")
 
         # Fetch ALL comments with pagination
-        print("💬 Fetching all comments...")
+        print("Fetching all comments...")
         total_to_fetch = media_info.comment_count
 
         # media_comments has an 'amount' parameter to specify how many to fetch
         # By default it only fetches 20, so we need to specify the full amount
         all_comments = cl.media_comments(media_pk, amount=total_to_fetch)
 
-        print(f"✅ Fetched {len(all_comments)} comments!")
+        print(f"Fetched {len(all_comments)} comments!")
 
         # Parse comments
         comments = []
@@ -443,7 +463,7 @@ def scrape_with_instagrapi(url, username=None, password=None):
         return metadata, comments
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"Error: {e}")
         import traceback
         traceback.print_exc()
         return None
@@ -454,9 +474,21 @@ def scrape_with_scrapfly_only(url):
     WARNING: This method can only get metadata, NOT all comments
     Instagram requires authentication to access comments
     """
+    if not client:
+        print("Error: Scrapfly client not available (no API key)")
+        return None
+        
     print(f"\nScraping with Scrapfly (no auth - limited data)...")
 
-    shortcode_match = re.search(r'/(p|reel)/([A-Za-z0-9_-]+)', url)
+    # Limpiar URL
+    try:
+        url = clean_url(url)
+    except ValueError as e:
+        print(f"ERROR: {e}")
+        return None
+
+    # Extract shortcode - INCLUYE /reels/ con 's'
+    shortcode_match = re.search(r'/(p|reel|reels)/([A-Za-z0-9_-]+)', url)
     if not shortcode_match:
         print("Error: Invalid URL")
         return None
@@ -526,10 +558,10 @@ def scrape_instagram_video(url, instagram_username=None, instagram_password=None
 
     # Check if we have Instagram credentials
     if instagram_username and instagram_password:
-        print("✅ Instagram credentials provided - will fetch ALL comments")
+        print("Instagram credentials provided - will fetch ALL comments")
         result = scrape_with_instagrapi(url, instagram_username, instagram_password)
     else:
-        print("⚠️  No Instagram credentials - can only get metadata (NO COMMENTS)")
+        print("No Instagram credentials - can only get metadata (NO COMMENTS)")
         print("   To get all comments, provide Instagram username & password")
         result = scrape_with_scrapfly_only(url)
 
@@ -548,14 +580,14 @@ def scrape_instagram_video(url, instagram_username=None, instagram_password=None
 
 def main():
     print("="*70)
-    print("INSTAGRAM COMMENT SCRAPER v2.1 (FIXED)")
+    print("INSTAGRAM COMMENT SCRAPER v2.2 (FINAL)")
     print("="*70)
 
     # Important limitation warning
-    print("\n⚠️  IMPORTANT LIMITATIONS:")
+    print("\nIMPORTANT LIMITATIONS:")
     print("   - Instagram limits comment access to ~50-60% of total comments")
     print("   - This is a security measure by Instagram, not a bug")
-    print("   - For example: Post with 175 comments → You'll get ~91 comments")
+    print("   - For example: Post with 175 comments -> You'll get ~91 comments")
     print("   - Missing comments are filtered/hidden by Instagram (spam, blocked users, etc.)")
     print("   - NO scraper can bypass this limit without violating Instagram ToS\n")
 
@@ -574,23 +606,37 @@ def main():
         instagram_password = input("Instagram password: ").strip()
 
         if not INSTAGRAPI_AVAILABLE:
-            print("\n⚠️  Installing instagrapi...")
+            print("\nInstalling instagrapi...")
             import subprocess
             try:
                 subprocess.check_call([sys.executable, "-m", "pip", "install", "instagrapi"])
-                print("✅ instagrapi installed. Please restart the script.")
+                print("instagrapi installed. Please restart the script.")
                 return
             except:
-                print("❌ Failed to install instagrapi. Please install manually: pip install instagrapi")
+                print("Failed to install instagrapi. Please install manually: pip install instagrapi")
                 return
     else:
-        print("\n⚠️  Proceeding without authentication - will get limited data only")
+        print("\nProceeding without authentication - will get limited data only")
 
-    num_videos = int(input("\n¿Cuántos links quieres scrapear? (máx 10): "))
+    num_videos = int(input("\nCuantos links quieres scrapear? (max 10): "))
     links = [input(f"Link {i+1}: ") for i in range(num_videos)]
+    
+    # Limpiar y validar links
+    print("\nValidating URLs...")
+    cleaned_links = []
+    for i, link in enumerate(links, 1):
+        try:
+            cleaned = clean_url(link)
+            cleaned_links.append(cleaned)
+            print(f"OK - Link {i}: {cleaned}")
+        except ValueError as e:
+            print(f"ERROR - Link {i}: {e}")
+            return
+    
+    links = cleaned_links
     validate_links(links, "instagram")
 
-    export_format = input("Formato de salida (csv/xlsx): ").lower()
+    export_format = input("\nFormato de salida (csv/xlsx): ").lower()
 
     all_data = []
     for link in links:
@@ -599,7 +645,7 @@ def main():
             all_data.append(data)
 
     if not all_data:
-        print("\n❌ No se pudo scrapear nada.")
+        print("\nNo se pudo scrapear nada.")
         return
 
     # Export using the existing export functions
@@ -621,7 +667,7 @@ def main():
         else:
             export_to_csv(metadata, comments, "instagram", f"instagram_{date_str}")
 
-    print(f"\n✅ Datos exportados en {outfile}")
+    print(f"\nDatos exportados en {outfile}")
 
 if __name__ == "__main__":
     main()
