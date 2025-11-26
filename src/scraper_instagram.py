@@ -103,7 +103,7 @@ def safe_media_info(cl, media_pk, username=None, password=None):
     Robust media_info wrapper with better error handling:
     - Try cl.media_info_v1() directly first
     - On Pydantic error, fetch raw data, normalize, then extract
-    - On 401, attempt re-login and retry
+    - On 401, attempt re-login and retry (in-memory only)
     """
     # Strategy 1: Try the standard V1 API call
     try:
@@ -131,7 +131,7 @@ def safe_media_info(cl, media_pk, username=None, password=None):
         except Exception as normalize_err:
             print(f"Normalized extraction failed: {str(normalize_err)[:100]}")
             
-            # Strategy 3: Check if it's a 401 and try re-login
+            # Strategy 3: Check if it's a 401 and try re-login (in-memory)
             status_code = getattr(getattr(normalize_err, "response", None), "status_code", None)
             
             if status_code == 401:
@@ -140,7 +140,7 @@ def safe_media_info(cl, media_pk, username=None, password=None):
                 
                 if uname and pwd:
                     try:
-                        print("Attempting re-login...")
+                        print("Attempting re-login (in-memory)...")
                         cl.login(uname, pwd)
                         
                         # Retry after login
@@ -201,7 +201,7 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
         
         # Check if it's a login error - handle it immediately
         if 'login_required' in error_str.lower() or 'loginrequired' in str(type(v1_err)).lower():
-            print("Login required error detected - attempting re-login...")
+            print("Login required error detected - attempting re-login (in-memory)...")
             uname = username or os.getenv("INSTAGRAM_USERNAME")
             pwd = password or os.getenv("INSTAGRAM_PASSWORD")
             
@@ -212,13 +212,7 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
                     cl.login(uname, pwd)
                     print("Re-login successful, retrying request...")
                     
-                    # Save the new session
-                    try:
-                        cl.dump_settings('instagram_session.json')
-                    except:
-                        pass
-                    
-                    # Retry with fresh session
+                    # Retry with fresh session (in-memory)
                     return original_method(media_pk)
                     
                 except Exception as login_err:
@@ -247,7 +241,7 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
             
             # Check for login error again in normalized extraction
             if 'login_required' in error_str2.lower() or 'loginrequired' in str(type(normalize_err)).lower():
-                print("Login required in normalized extraction - re-login attempt...")
+                print("Login required in normalized extraction - re-login attempt (in-memory)...")
                 uname = username or os.getenv("INSTAGRAM_USERNAME")
                 pwd = password or os.getenv("INSTAGRAM_PASSWORD")
                 
@@ -258,13 +252,7 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
                         cl.login(uname, pwd)
                         print("Re-login successful after normalization failure")
                         
-                        # Save the new session
-                        try:
-                            cl.dump_settings('instagram_session.json')
-                        except:
-                            pass
-                        
-                        # Final retry after re-login
+                        # Final retry after re-login (in-memory)
                         result = cl.private_request(f"media/{media_pk}/info/")
                         if result and "items" in result and result["items"]:
                             raw_media = result["items"][0]
@@ -283,7 +271,7 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
                 
                 if uname and pwd:
                     try:
-                        print("HTTP 401/403 detected - attempting re-login...")
+                        print("HTTP 401/403 detected - attempting re-login (in-memory)...")
                         import time
                         time.sleep(1)
                         cl.login(uname, pwd)
@@ -303,7 +291,7 @@ def safe_media_info_patched(cl, media_pk, username=None, password=None):
                 f"All media_info strategies failed.\n"
                 f"V1 error: {str(v1_err)[:200]}\n"
                 f"Normalize error: {str(normalize_err)[:200]}\n"
-                f"Hint: Try deleting 'instagram_session.json' and running again with fresh credentials."
+                f"Hint: Try re-running with fresh credentials or check network/auth settings."
             ) from normalize_err
 
 
@@ -340,58 +328,32 @@ def scrape_with_instagrapi(url, username=None, password=None):
     cl = InstagrapiClient()
     cl.delay_range = [1, 3]
 
-    # Login logic with session validation
-    session_file = 'instagram_session.json'
+    # Login logic (no session persistence)
     logged_in = False
 
     if not username or not password:
         print("Error: Username and password required")
         return None
 
-    # Try saved session first
-    if os.path.exists(session_file):
+    # Always perform a fresh login in-memory (do not load or save session files)
+    try:
+        print("Performing fresh login (no session persistence)...")
+        cl.login(username, password)
+        logged_in = True
+        print("Login successful!")
+    except Exception as e:
+        print(f"Login failed: {e}")
+        # Try one more time after small delay
+        import time
+        time.sleep(2)
         try:
-            print("Loading saved session...")
-            cl.load_settings(session_file)
-            
-            # Validate session by making a simple request
-            try:
-                cl.get_timeline_feed()  # Simple test request
-                logged_in = True
-                print("Saved session is valid")
-            except Exception as validation_err:
-                print(f"Saved session expired or invalid: {str(validation_err)[:50]}")
-                # Session invalid, delete it and force fresh login
-                if os.path.exists(session_file):
-                    os.remove(session_file)
-                    print("Deleted invalid session file")
-        except Exception as e:
-            print(f"Could not load session: {str(e)[:50]}")
-            if os.path.exists(session_file):
-                os.remove(session_file)
-
-    # If not logged in with session, do fresh login
-    if not logged_in:
-        try:
-            print("Performing fresh login...")
+            print("Retrying login...")
             cl.login(username, password)
-            cl.dump_settings(session_file)
             logged_in = True
-            print("Fresh login successful!")
-        except Exception as e:
-            print(f"Login failed: {e}")
-            # Try one more time after small delay
-            import time
-            time.sleep(2)
-            try:
-                print("Retrying login...")
-                cl.login(username, password)
-                cl.dump_settings(session_file)
-                logged_in = True
-                print("Login successful on retry!")
-            except Exception as e2:
-                print(f"Login failed again: {e2}")
-                return None
+            print("Login successful on retry!")
+        except Exception as e2:
+            print(f"Login failed again: {e2}")
+            return None
 
     if not logged_in:
         print("Error: Could not establish valid session")
